@@ -152,8 +152,12 @@ def get_metrics(conn, queue_name):
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT queue_name, queue_length, newest_msg_age_sec, oldest_msg_age_sec,
-                   total_messages, scrape_time
+            SELECT queue_name,
+                   queue_length,
+                   newest_msg_age_sec,
+                   oldest_msg_age_sec,
+                   total_messages,
+                   scrape_time
             FROM pgmq.metrics(queue_name => %s::text)
             """,
             (queue_name,),
@@ -182,10 +186,21 @@ def purge_queue(conn, queue_name):
 
 
 def get_pgmq_version(conn):
+    version = None
     with conn.cursor() as cur:
         cur.execute("SELECT extversion FROM pg_extension WHERE extname = 'pgmq'")
         row = cur.fetchone()
-        return row[0] if row else None
+        version = row[0] if row else None
+
+    if version is None:
+        import semver
+        with conn.cursor() as cur:
+            cur.execute("SELECT version FROM pgmq.__pgmq_migrations")
+            rows = cur.fetchall()
+            rows = [semver.Version.parse(row[0]) for row in rows]
+            version = max(rows) if len(rows) > 0 else None
+
+    return version
 
 
 # ---------------------------------------------------------------------------

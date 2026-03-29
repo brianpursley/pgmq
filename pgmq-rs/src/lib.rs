@@ -154,6 +154,8 @@ use sqlx::types::chrono::Utc;
 use sqlx::{Pool, Postgres, Row};
 
 pub mod errors;
+#[cfg(feature = "install-sql")]
+pub mod install;
 pub mod pg_ext;
 pub mod types;
 pub mod util;

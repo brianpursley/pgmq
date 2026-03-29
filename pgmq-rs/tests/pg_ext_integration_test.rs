@@ -32,7 +32,7 @@ async fn init_queue_ext(qname: &str) -> pgmq::PGMQueueExt {
     let queue = pgmq::PGMQueueExt::new(test_db_str.clone(), 2)
         .await
         .expect("failed to connect to test db");
-    queue.init().await.expect("failed to init pgmq");
+    install_pgmq(&queue).await;
     // make sure queue doesn't exist before the test
     let _ = queue.drop_queue(qname).await;
     // CREATE QUEUE
@@ -78,6 +78,15 @@ async fn archive_rowcount(qname: &str, connection: &Pool<Postgres>) -> i64 {
         .await
         .unwrap()
         .get::<i64, usize>(0)
+}
+
+async fn install_pgmq(queue: &pgmq::PGMQueueExt) -> bool {
+    #[cfg(feature = "install-sql-embedded")]
+    let result = queue.install_sql_from_embedded().await.map(|_| true);
+    #[cfg(not(feature = "install-sql"))]
+    let result = queue.init().await;
+
+    result.expect("failed to init pgmq")
 }
 
 #[tokio::test]
@@ -518,7 +527,7 @@ async fn test_byop() {
 
     // use the pool to create a new queue
     let queue = pgmq::PGMQueueExt::new_with_pool(pool).await;
-    let init = queue.init().await.expect("failed to create extension");
+    let init = install_pgmq(&queue).await;
     assert!(init, "failed to create extension");
 
     // first time must return true
@@ -553,7 +562,7 @@ async fn test_transactional() {
 
     // create queue using pool_0
     let queue = pgmq::PGMQueueExt::new_with_pool(pool_0.clone()).await;
-    let init = queue.init().await.expect("failed to create extension");
+    let init = install_pgmq(&queue).await;
     assert!(init, "failed to create extension");
 
     let created = queue

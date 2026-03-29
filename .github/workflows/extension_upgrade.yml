@@ -23,14 +23,15 @@ on:
 
 jobs:
   test:
-    name: Upgrade Test (pg ${{ matrix.pg }}) - partman ${{ matrix.partman }}
+    name: Upgrade Test (pg ${{ matrix.pg }}) - partman ${{ matrix.partman }} - installed with ${{ matrix.install }}
     runs-on: ubuntu-latest
     container: pgxn/pgxn-tools
     strategy:
       fail-fast: false
       matrix:
-        pg: [14, 15, 16, 17, 18]
-        partman: [5.1.0]
+        pg: [ 14, 15, 16, 17, 18 ]
+        partman: [ 5.1.0 ]
+        install: [ ext, sql ]
     env:
       DATABASE_URL: postgresql://postgres@localhost:5432/postgres
     steps:
@@ -53,15 +54,29 @@ jobs:
       - name: Stash test files from CI branch
         run: cp -r pgmq-extension/client-tests /tmp/upgrade-client-tests
 
+      # The sql-only installation method in the rust client that we're testing was added at version `1.11.0` and
+      # therefore does not exist on earlier branches, so copy it to a temp location that survives the
+      # `git checkout` to the old tag.
+      - name: Stash rust client from CI branch
+        if: ${{ matrix.install == 'sql' }}
+        run: |
+          cp -r pgmq-rs /tmp/pgmq-rs
+
       - name: Checkout old version (v1.5.0)
+        if: ${{ matrix.install == 'ext' }}
         run: git checkout tags/v1.5.0
+
+      - name: Checkout old version (v1.9.0)
+        if: ${{ matrix.install == 'sql' }}
+        run: git checkout tags/v1.9.0
 
       - name: Install pg_partman
         run: |
           pgxn install "pg_partman=${{ matrix.partman }}"
           psql -c "CREATE EXTENSION pg_partman;"
 
-      - name: Install pgmq v1.5.0
+      - name: Install pgmq v1.5.0 as an extension
+        if: ${{ matrix.install == 'ext' }}
         working-directory: ./pgmq-extension
         run: |
           make clean || true
@@ -69,7 +84,27 @@ jobs:
           make install
           psql -c "CREATE EXTENSION pgmq;"
 
+      - name: Install pgmq v1.9.0 from sql
+        if: ${{ matrix.install == 'sql' }}
+        run: |
+          # Replace the old rust client code with the current one
+          original_dir=$(pwd)
+          rm -rf pgmq-rs
+          cp -r /tmp/pgmq-rs pgmq-rs
+          cd "$original_dir/pgmq-rs"
+
+          # Build and run the rust client to install pgmq from sql
+          # Note: Because we're re-building the new rust client while an old version of the repo is checked out,
+          # the client will embed the migration scripts from the old version.
+          cargo run --features cli -- install install-from-embedded
+
+          # Restore the old rust client
+          cd "$original_dir"
+          rm -rf pgmq-rs
+          git restore .
+
       - name: Run SQL tests
+        if: ${{ matrix.install == 'ext' }}
         working-directory: ./pgmq-extension
         run: pg-build-test
 
@@ -82,7 +117,8 @@ jobs:
           CI_BRANCH: ${{ steps.current-version.outputs.CI_BRANCH }}
         run: git checkout $CI_BRANCH
 
-      - name: Install and upgrade pgmq to CI branch version
+      - name: Install and upgrade pgmq extension to CI branch version
+        if: ${{ matrix.install == 'ext' }}
         working-directory: ./pgmq-extension
         run: |
           make clean || true
@@ -90,11 +126,17 @@ jobs:
           make install
           psql -c "ALTER EXTENSION pgmq UPDATE;"
 
+      - name: Install and upgrade pgmq to CI branch version using sql
+        if: ${{ matrix.install == 'sql' }}
+        working-directory: ./pgmq-rs
+        run: cargo run --features cli -- install install-from-embedded
+
       - name: Run post-upgrade tests
         working-directory: ./pgmq-extension/client-tests
         run: UPGRADE_PHASE=post uv run pytest upgrade_test.py -v
 
       - name: Run SQL tests
+        if: ${{ matrix.install == 'ext' }}
         working-directory: ./pgmq-extension
         run: pg-build-test
 
