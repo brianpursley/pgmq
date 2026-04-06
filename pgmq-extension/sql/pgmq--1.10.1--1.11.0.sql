@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS pgmq.topic_bindings
 -- Includes queue_name and compiled_regex to allow index-only scans (no table access needed)
 CREATE INDEX IF NOT EXISTS idx_topic_bindings_covering ON pgmq.topic_bindings (pattern) INCLUDE (queue_name, compiled_regex);
 
+SELECT pg_catalog.pg_extension_config_dump('pgmq.topic_bindings', '');
+
 CREATE OR REPLACE FUNCTION pgmq.validate_routing_key(routing_key text)
     RETURNS boolean
     LANGUAGE plpgsql
