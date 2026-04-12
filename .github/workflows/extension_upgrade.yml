@@ -144,3 +144,86 @@ jobs:
         if: failure()
         working-directory: ./pgmq-extension
         run: cat regression.diffs
+
+  upgrade_scripts_do_not_diverge:
+    name: Confirm upgrade scripts do not diverge from fresh install (pg ${{ matrix.pg }})
+    runs-on: ubuntu-latest
+    container: pgxn/pgxn-tools
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [ 14, 15, 16, 17, 18 ]
+    env:
+      DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get current branch
+        id: current-version
+        run: echo "CI_BRANCH=$(git name-rev --name-only HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Start PostgreSQL ${{ matrix.pg }}
+        run: pg-start ${{ matrix.pg }}
+
+      - name: Checkout old version (v1.5.0)
+        run: git checkout tags/v1.5.0
+
+      - name: Install pgmq v1.5.0 as an extension
+        working-directory: ./pgmq-extension
+        run: |
+          make clean || true
+          make
+          make install
+          psql -c "CREATE EXTENSION pgmq;"
+
+      - name: Checkout CI branch
+        env:
+          CI_BRANCH: ${{ steps.current-version.outputs.CI_BRANCH }}
+        run: git checkout $CI_BRANCH
+
+      - name: Install and upgrade pgmq extension to CI branch version
+        working-directory: ./pgmq-extension
+        run: |
+          make clean || true
+          make
+          make install
+          psql -c "ALTER EXTENSION pgmq UPDATE;"
+
+      - name: Dump the extension schema (upgrade path)
+        working-directory: ./pgmq-extension
+        run: |
+          make dump.extension-schema FILE_PATH=/tmp/pg_dump_upgrade.txt
+
+      - name: Drop the extension and perform a fresh installation
+        run: |
+          psql "$DATABASE_URL" -c "DROP EXTENSION pgmq;"
+          psql "$DATABASE_URL" -c "CREATE EXTENSION pgmq;"
+
+      - name: Dump the extension schema (fresh install)
+        working-directory: ./pgmq-extension
+        run: |
+          make dump.extension-schema FILE_PATH=/tmp/pg_dump_fresh.txt
+
+      - name: Compare output
+        run: |
+          # `pg_dump` outputs two random lines that will always be different for every output. They look something like this:
+          #
+          # ```
+          # \restrict JHbd1xebXKAq2dfkAGAXWi7b1B3ifORyKWdIrTcwerJibjA54EsYymeEFrIQNmc
+          # \unrestrict JHbd1xebXKAq2dfkAGAXWi7b1B3ifORyKWdIrTcwerJibjA54EsYymeEFrIQNmc
+          # ```
+          num_lines_different=$(! diff -y --suppress-common-lines --ignore-all-space /tmp/pg_dump_upgrade.txt /tmp/pg_dump_fresh.txt | wc -l)
+          if [[ $num_lines_different -gt 2 ]]; then
+            echo "PGMQ upgrade diverges from a fresh installation. Diff:"
+            ! diff --suppress-common-lines --ignore-all-space /tmp/pg_dump_upgrade.txt /tmp/pg_dump_fresh.txt
+
+            echo "Upgrade path:"
+            cat /tmp/pg_dump_upgrade.txt
+
+            echo "Fresh install:"
+            cat /tmp/pg_dump_fresh.txt
+
+            exit 1
+          fi
